@@ -11,7 +11,8 @@ define([
   "jquery",
   "momentjs",
   "jqueryui",
-  "jvalidate"
+  "jvalidate",
+  "datetimepicker"
 ],
 
 function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtemplates, EnvStatus, Backbone, $) {
@@ -57,6 +58,74 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
     }
   });
 
+  var ScheduledJob = genesis.Backbone.Model.extend({
+    linkType: backend.LinkTypes.EnvScheduledJob
+  });
+
+  var EnvJobs = genesis.Backbone.Collection.extend({
+    linkType: backend.LinkTypes.EnvScheduledJob,
+
+    model: ScheduledJob,
+
+    initialize: function(atts, options) {
+      this.projectId = options.projectId;
+      this.envId = options.envId;
+    },
+
+    url: function(){
+      return "rest/projects/" + this.projectId + "/envs/" + this.envId + "/jobs";
+    },
+
+    clone: function() {
+      return new this.constructor(this.models, {projectId: this.projectId, envId: this.envId});
+    }
+  });
+
+  var FailedEnvJobs = EnvJobs.extend({
+    url: function() {
+      return "rest/projects/" + this.projectId + "/envs/" + this.envId + "/failedJobs";
+    }
+  });
+
+  EnvironmentDetails.Views.SingleWorkflowView = Backbone.View.extend({
+    template: "app/templates/env_details/workflow_details.html",
+
+    initialize: function (options) {
+      this.model = new EnvHistory.WorkflowHistoryModel({}, {workflowId: options.workflowId, projectId: options.projectId, envId: options.envId});
+    },
+
+    render: function () {
+      var view = this;
+      $.when(genesis.fetchTemplate(this.template), genesis.fetchTemplate(new EnvHistory.WorkflowHistoryView().template)).done(function (tmpl) {
+        $.when(view.model.fetch()).done(function() {
+          view.$el.html(tmpl({ workflow: view.model.toJSON() }));
+          var subview = new EnvHistory.WorkflowHistoryView({
+            expanded: true,
+            model: view.model,
+            el: view.$('div.workflow-section[data-workflow-id="' + view.model.id + '"]')
+          });
+
+          var failedSteps = _.chain(view.model.get("steps")).
+            filter(function(i){ return i.status == "Failed" }).
+            map(function(i) { return parseInt(i.stepId) }).
+            value();
+          subview.render(function() {
+            _(failedSteps).each(function(stepId) {
+              subview.showStepActions(stepId)
+            });
+          });
+        }).fail(function(error) {
+          if(error.status === 400) {
+            view.$el.html(tmpl({ workflow: view.model }));
+            var panel = new status.LocalStatus({ el: self.$(".notification")});
+            panel.error(JSON.parse(error.responseText).error)
+          }
+        })
+      });
+    }
+  });
+
+
   EnvironmentDetails.Views.Details = Backbone.View.extend({
     template: "app/templates/env_details.html",
 
@@ -75,7 +144,8 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
 
     events: {
       "click #tab3": "renderWorkflowList",
-      "click .action-button:not(.disabled)": "executeWorkflow",
+      "click .schedule-button:not(.disabled)": "executeWorkflowClick",
+      "click .action-button:not(.disabled)": "executeWorkflowClick",
       "click .cancel-button:not(.disabled)": "cancelWorkflow",
       "click .reset-button:not(.disabled)": "resetEnvStatus",
       "click a.show-sources" : "showSources",
@@ -84,9 +154,15 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
     },
 
     initialize: function (options) {
+      function capitalise(string) {
+        return string.charAt(0).toUpperCase() + string.slice(1);
+      }
+
       this.details = new EnvironmentDetails.Model({"id": options.envId, projectId: options.projectId});
       this.workflowId = options.workflowId;
-      poller.PollingManager.start(this.details, {noninterruptible: true});
+      this.envJobs = new EnvJobs({}, {projectId: this.details.get("projectId"), envId: this.details.id});
+
+      poller.PollingManager.start(this.details, { noninterruptible: true });
 
       this.details.bind("change:status", this.updateControlButtons, this);
       this.details.bind("change:vms", this.renderVirtualMachines, this);
@@ -94,7 +170,13 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
       this.details.bind("change:servers change:vms", this.checkServersAndVms, this);
       this.details.bind("change:attributes change:modificationTime change:timeToLiveStr", this.renderAttributes, this);
       this.details.bind("change:name", this.onRename, this);
+
+      var self = this;
       this.executeWorkflowDialog = new ExecuteWorkflowDialog().
+        bind('workflow-scheduled', function(workflow) {
+          status.StatusPanel.information("'" + capitalise(workflow.name) + "' execution was scheduled successfully");
+          self.envJobs.fetch()
+        }).
         bind('workflow-started', function(workflow) {
           status.StatusPanel.information("Workflow '" + workflow.name + "' execution started");
         }).
@@ -124,6 +206,8 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
         this.expandLifeTimeDialog.dialog('destroy').remove();
       }
 
+      genesis.utils.nullSafeClose(this.scheduledJobsView);
+      genesis.utils.nullSafeClose(this.failedJobsView);
       genesis.utils.nullSafeClose(this.workflowHistory);
       genesis.utils.nullSafeClose(this.sourcesView);
       genesis.utils.nullSafeClose(this.accessView);
@@ -166,9 +250,13 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
       this.$('.envname').html(this.details.get('name'));
     },
 
-    executeWorkflow: function (e) {
+    executeWorkflowClick: function (e) {
       var workflowName = e.currentTarget.rel;
+      var scheduling = $(e.currentTarget).attr("data-scheduling") || false;
+      this.executeWorkflow(workflowName, scheduling);
+    },
 
+    executeWorkflow: function (workflowName, scheduling, varValues) {
       genesis.app.trigger("page-view-loading-started");
 
       var template = new gtemplates.TemplateModel(
@@ -183,40 +271,42 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
 
       var self = this;
 
-      $.when(template.fetch())
-        .done(function() {
-          var workflow = _(template.get('workflows')).find(function (item) { return item === workflowName; });
+      $.when(template.fetch()).done(function () {
+        var workflow = _(template.get('workflows')).find(function (item) {
+          return item === workflowName;
+        });
 
-          if (workflow) {
-            var wmodel = new gtemplates.WorkflowModel({
-                name: self.details.get('templateName'),
-                version: self.details.get('templateVersion')
-              },
-              {
-                projectId: self.details.get("projectId"),
-                workflow: workflowName,
-                instanceId: self.details.get("id")
-              });
-
-            $.when(wmodel.fetch()).done(function(){
-              self.executeWorkflowDialog.showFor(self.details, wmodel);
-            }).fail(function(jqXHR){
-              genesis.app.trigger("page-view-loading-completed");
-              status.StatusPanel.error(jqXHR);
+        if (workflow) {
+          var wmodel = new gtemplates.WorkflowModel({
+              name: self.details.get('templateName'),
+              version: self.details.get('templateVersion')
+            },
+            {
+              projectId: self.details.get("projectId"),
+              workflow: workflowName,
+              instanceId: self.details.get("id")
             });
-          }
-        }).fail(function(jqXHR) {
-          status.StatusPanel.error(jqXHR);
-          genesis.app.trigger("page-view-loading-completed");
-        })
-    },
 
-    updateControlButtons: function () {
+          $.when(wmodel.fetch()).done(function () {
+            self.executeWorkflowDialog.showFor(self.details, wmodel, scheduling, varValues);
+          }).fail(function (jqXHR) {
+            genesis.app.trigger("page-view-loading-completed");
+            status.StatusPanel.error(jqXHR);
+          });
+        }
+      }).fail(function (jqXHR) {
+        status.StatusPanel.error(jqXHR);
+        genesis.app.trigger("page-view-loading-completed");
+      })
+  },
+
+  updateControlButtons: function () {
       var status = this.details.get('status'),
           activeExecution = (status === "Busy");
       this.$(".cancel-button")
-        .toggleClass("disabled", !this.details.canCancelWorkflow())
-        .toggle(status !== "Destroyed");
+        .toggle(status !== "Destroyed" && this.details.canCancelWorkflow());
+
+      this.$(".button-group.action").toggle(status !== "Destroyed")
 
       this.$(".action-button")
         .toggleClass("disabled", activeExecution)
@@ -258,7 +348,7 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
     renderAttributes: function() {
       var view = this;
       $.when(genesis.fetchTemplate(this.envAttributesTemplate)).done(function(tmpl) {
-        view.$("#panel-tab-1").html(tmpl({
+        view.$("#env-attrs").html(tmpl({
           attributes: _.sortBy(view.details.get("attributes"), function(attr) { return attr.description; }),
           environment: view.details.toJSON(),
           utils: genesis.utils
@@ -304,6 +394,7 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
           }));
 
           view.$(".rename-button").toggle(view.details.canRename());
+          view.$(".cancel-button").toggle(view.details.canCancelWorkflow());
 
           view.updateControlButtons();
           view._renderAllSubViews();
@@ -313,8 +404,29 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
           view.confirmationDialog = view.createConfirmationDialog(view.$("#dialog-confirm"));
           view.resetEnvStatusDialog = view.createResetEnvStatusDialog(view.$("#dialog-reset"));
           view.envRenameDialog = view.createRenameDialog(view.$("#env-rename"));
-          view.expandLifeTimeDialog = view.createExpandLifeTimeDialog(view.$("#expand-env-life-time"))
-      }).fail(function() {
+          view.expandLifeTimeDialog = view.createExpandLifeTimeDialog(view.$("#expand-env-life-time"));
+
+          view.scheduledJobsView = new ScheduledJobsView({
+            el: view.$("#scheduled-executions"),
+            collection: view.envJobs,
+            $confirmDialog: view.$("#job-removal-confirm")
+          });
+
+          view.scheduledJobsView.render();
+          view.scheduledJobsView.bind("request-job-update", function(job){
+            view.executeWorkflow(job.get('workflow'), job.get("date"), job.get('variables'));
+          });
+
+          view.failedJobsView = new ScheduledJobsView({
+            el: view.$("#failed-executions"),
+            collection: new FailedEnvJobs({}, {projectId: view.details.get("projectId"), envId: view.details.id}),
+            $confirmDialog: view.$("#record-removal-confirm"),
+            error: true
+          });
+
+          view.failedJobsView.render();
+
+        }).fail(function() {
           genesis.app.trigger("server-communication-error",
             "Failed to get instance details<br/><br/> Please contact administrator.",
             "/project/" + view.details.get("projectId")
@@ -411,7 +523,8 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
             $.when(backend.EnvironmentManager.expandLifeTime(view.details, ttl)).done(function() {
               $(dialog).dialog("close");
               status.StatusPanel.information(ttl ? "Instance lifespan was updated" : "Instance lifespan was set to 'unlimited'");
-              view.details.set("timeToLive", ttl * 1000)
+              view.details.set("timeToLive", ttl * 1000);
+              view.envJobs.fetch();
             }).fail(function(jqxhr) {
               status.StatusPanel.error(jqxhr);
             }).always(function() {
@@ -430,19 +543,22 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
   });
 
   var ExecuteWorkflowDialog = variablesmodule.Views.AbstractWorkflowParamsView.extend({
-    template: "app/templates/environment_variables.html",
+    template: "app/templates/env_details/environment_variables.html",
 
     initialize: function() {
+      this.scheduling = true;
       this.$el.id = "#workflowParametersDialog";
     },
 
-    showFor: function(envDetails, workflow) {
+    showFor: function(envDetails, workflow, scheduling, varValues) {
+      this.scheduling = scheduling;
       this.workflow = workflow;
       this.envId = envDetails.get("id");
       this.projectId = envDetails.get("projectId");
       this.templateName = envDetails.get('templateName');
       this.templateVersion = envDetails.get('templateVersion');
       this.configurationId = envDetails.get('configurationId');
+      this.varValues = varValues;
       this.render();
     },
 
@@ -450,6 +566,10 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
       this.unbind();
       this.$el.dialog('destroy');
       this.remove();
+    },
+
+    executionDate: function() {
+      return new Date(this.$("#executionDate").val()).getTime()
     },
 
     runWorkflow: function() {
@@ -461,13 +581,19 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
 
       }
       genesis.app.trigger("page-view-loading-started");
-      var execution = backend.WorkflowManager.executeWorkflow(this.projectId, this.envId, this.workflow.get('name'), this.workflowParams());
+      var execution = !this.scheduling ?
+        backend.WorkflowManager.executeWorkflow(this.projectId, this.envId, this.workflow.get('name'), this.workflowParams()) :
+        backend.WorkflowManager.scheduleWorkflow(this.projectId, this.envId, this.workflow.get('name'), this.workflowParams(), this.executionDate());
 
       var view = this;
       $.when(execution).then(
         function success() {
           genesis.app.trigger("page-view-loading-completed");
-          view.trigger("workflow-started", view.workflow.toJSON());
+          if(view.scheduling) {
+            view.trigger("workflow-scheduled", view.workflow.toJSON());
+          } else {
+            view.trigger("workflow-started", view.workflow.toJSON());
+          }
           view.$el.dialog("close");
         },
         function fail(response) {
@@ -489,7 +615,7 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
           } else {
             view.trigger("workflow-validation-errors");
             var validator = $('#workflow-parameters-form').validate();
-            validator.showErrors(json.variablesErrors);
+              validator.showErrors(json.variablesErrors);
           }
         }
       );
@@ -501,7 +627,24 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
       $.when(genesis.fetchTemplate(this.template)).done(function (tmpl) {
 
         genesis.app.trigger("page-view-loading-completed");
-        view.$el.html(tmpl({noVariables: view.workflow.get('variables').length == 0, workflowName: view.workflow.get('name')}));
+        view.$el.html(tmpl({
+          noVariables: view.workflow.get('variables').length == 0,
+          workflowName: view.workflow.get('name'),
+          scheduling: view.scheduling
+        }));
+
+        if(view.scheduling) {
+          var date = new Date();
+          date.setHours(0);
+          date.setMinutes(0);
+          date.setMilliseconds(0);
+          view.$("#executionDate").datetimepicker({
+            minDate: date
+          });
+          if(_.isNumber(view.scheduling)) {
+            view.$("#executionDate").datetimepicker("setDate",  new Date(view.scheduling))
+          }
+        }
 
         var inputsView = new variablesmodule.Views.InputControlsView({
           el: view.$('#workflow_vars'),
@@ -509,34 +652,35 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
           projectId: view.projectId,
           workflow: view.workflow,
           configurationId: view.configurationId,
-          template: new Backbone.Model({name: view.templateName, version: view.templateVersion})
+          template: new Backbone.Model({name: view.templateName, version: view.templateVersion}),
+          variableValues: view.varValues || {}
         });
 
         inputsView.render(function() {
+          var runButton = view.scheduling ? "Schedule" : "Run";
+          var buttons = {};
+          buttons[runButton] = function() {
+            var $thisButton = $(this).parent().find("button:contains('" + runButton + "')"),
+              disabled = $thisButton.button( "option", "disabled" );
+            if(!disabled) {
+              $thisButton.button("disable");
+
+              view.unbind("workflow-validation-errors");
+              view.bind("workflow-validation-errors", function() {
+                $thisButton.button("enable");
+              });
+
+              view.runWorkflow();
+            }
+          };
+          buttons["Cancel"] = function () {
+            $(this).dialog( "close" );
+          };
           view.$el.dialog({
-            title: 'Execute ' + view.workflow.get('name'),
+            title: (view.scheduling ? 'Schedule ' : 'Execute ') + view.workflow.get('name'),
             width: _.size(view.workflow.get('variables')) > 0 ? 1052 : 400,
             autoOpen: true,
-            buttons: {
-              "Run": function() {
-                var $thisButton = $(this).parent().find("button:contains('Run')"),
-                  disabled = $thisButton.button( "option", "disabled" );
-                if(!disabled) {
-                  $thisButton.button("disable");
-
-                  view.unbind("workflow-validation-errors");
-                  view.bind("workflow-validation-errors", function() {
-                    $thisButton.button("enable");
-                  });
-
-                  view.runWorkflow();
-                }
-              },
-
-              "Cancel": function () {
-                $(this).dialog( "close" );
-              }
-            }
+            buttons: buttons
           });
         });
       });
@@ -544,6 +688,96 @@ function (genesis, backend, poller, status, EnvHistory, variablesmodule, gtempla
 
     /* override */ variablesModel: function() {
        return this.workflow.get('variables');
+    }
+
+  });
+
+  var ScheduledJobsView = Backbone.View.extend({
+    template: "app/templates/env_details/scheduled_executions.html",
+    events: {
+      "click .job-remove": "removeJob",
+      "click .job-update": "updateJob",
+      "click .job-details": "toggleDetails"
+    },
+
+    initialize: function(options){
+      this.removeConfigDlg = options.$confirmDialog.dialog({
+        title: 'Confirmation',
+        buttons: {
+          "Yes": function () {
+          },
+          "No": function () {
+            $(this).dialog("close");
+          }
+        }
+      });
+      this.error = options.error || false;
+      this.collection.bind("reset", this.render, this);
+      this.collection.fetch();
+
+      this.collectionPoll = this.collection.clone({projectId: this.collection.projectId, envId: this.collection.envId});
+      poller.PollingManager.start(this.collectionPoll, { noninterruptible: true,  delay: 30000 });
+      var self = this;
+
+      this.collectionPoll.bind("reset", function(e) {
+        if(self.collectionPoll.length != self.collection.length) {
+          self.collection.fetch()
+        }
+      });
+    },
+
+    updateJob: function(e) {
+      var id = $(e.currentTarget).attr("data-job-id")
+        , job = this.collection.get(id);
+      this.trigger("request-job-update", job);
+    },
+
+    removeJob: function(e) {
+      var buttons = this.removeConfigDlg.dialog( "option", "buttons" );
+      var id = $(e.currentTarget).attr("data-job-id")
+        , job = this.collection.get(id)
+        , self = this;
+
+      buttons["Yes"] = function() {
+        $.when(job.destroy()).done(function() {
+          self.collection.fetch();
+          status.StatusPanel.information("Record was successfully removed");
+        }).fail(function(jqxhr) {
+          status.StatusPanel.error(jqxhr);
+        }).always(function(){
+          self.removeConfigDlg.dialog("close");
+        });
+      };
+      this.removeConfigDlg.dialog("option", "buttons", buttons);
+      this.removeConfigDlg.dialog("open");
+    },
+
+    toggleDetails: function(e) {
+      var id = $(e.currentTarget).attr("rel");
+      $(e.currentTarget).toggleClass("expanded");
+      this.$(id).slideToggle("fast");
+    },
+
+    onClose: function(){
+      this.removeConfigDlg && this.removeConfigDlg.dialog('destroy');
+      poller.PollingManager.stop(this.collectionPoll);
+    },
+
+    render: function() {
+      var self = this;
+      $.when(genesis.fetchTemplate(this.template)).done(function(tmpl) {
+       if(self.collection.length == 0) {
+         self.$el.html("")
+       } else {
+         self.$el.html(tmpl({
+           jobs: _(self.collection.sortBy(function(i) { return self.error ? -i.get('date') : i.get('date') })).map(function(i) { return i.toJSON(); }),
+           moment: moment,
+           utils: genesis.utils,
+           accessRights: self.collection.itemAccessRights(),
+           error: self.error
+         }));
+       }
+      });
     }
 
   });

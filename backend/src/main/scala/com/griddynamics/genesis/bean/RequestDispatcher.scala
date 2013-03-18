@@ -139,7 +139,7 @@ class RequestDispatcherImpl(workflowConfig: WorkflowConfig,
     def destroyingCoordinator(envId: Int, projectId: Int, flowSteps: Seq[StepBuilder], rescueSteps: Seq[StepBuilder]) =
         new TypedFlowCoordinatorImpl(
             new GenesisFlowCoordinator(envId, projectId, flowSteps, storeService,
-                stepCoordinatorFactory, rescueSteps) with DestroyWorkflow,
+                stepCoordinatorFactory, rescueSteps) with DestroyWorkflow ,
             workflowConfig, executorService, actorSystem, remoteAgentService
 
         )

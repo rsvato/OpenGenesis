@@ -4,6 +4,12 @@
 <div id="dialog-reset" style="display: none; ">
     Are you sure that current instance is not broken?
 </div>
+<div id="job-removal-confirm" style="display:none">
+    Are you sure you want to remove this scheduled job?
+</div>
+<div id="record-removal-confirm" style="display:none">
+    Are you sure you want to remove this record?
+</div>
 <div id="env-rename" style="display: none; ">
     <form>
         <input id="new-env-name" name="new-env-name" type="text">
@@ -37,9 +43,22 @@
         </div>
         <div id="workflow-triggers">
             <% if (environment.status !== "Destroyed") { %>
-                <a href="javascript:void(0)" class="button cancel-button executable" rel="Cancel"> <span> Cancel </span> </a>
+                <a href="javascript:void(0)" class="button cancel-button executable" rel="Cancel" style="margin-left: 2px;"> <span> Cancel </span> </a>
                 <% for(var i = 0, count = actions.length; i < count; i++) { var action = actions[i]; %>
-                    <a href="javascript:void(0)" class="button action-button executable" rel="<%= action.name %>"> <span> <%= action.name %> </span> </a>
+                    <div class="button-group dropdown action" style=" margin-right: 2px; " >
+                        <a href="javascript:void(0)" class="button dropdown-toggle" rel="<%= action.name %>" data-toggle="dropdown">
+                            <span>
+                                <b class="caret"></b>
+                            </span>
+                        </a>
+                        <a href="javascript:void(0)" class="button action-button executable" rel="<%= action.name %>" style="">
+                            <span> <%= action.name %> </span>
+                        </a>
+                        <ul class="dropdown-menu" >
+                            <li class="action-button"><a href="javascript: void(0)" rel="<%= action.name %>" class="action-button" >Run...</a></li>
+                            <li><a href="javascript: void(0)"   rel="<%= action.name %>" class="schedule-button" data-scheduling="true">Schedule... </a></li>
+                        </ul>
+                    </div>
                 <% } %>
             <% } %>
         </div>
@@ -56,8 +75,16 @@
     <a href="javascript:void(0);" class="tab" id="tab2" rel="#panel-tab-2"> <span> Servers </span> </a>
   </div>
 
-  <div id="panel">
-    <div id="panel-tab-1" class="tab-content opened"></div>
+   <div id="panel">
+    <div id="panel-tab-1" class="tab-content opened">
+        <div id="env-attrs"></div>
+
+        <div id="scheduled-executions">
+        </div>
+
+        <div id="failed-executions">
+        </div>
+    </div>
 
     <div id="panel-tab-3" class="tab-content"></div>
 

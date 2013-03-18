@@ -95,10 +95,6 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.jclouds.api</groupId>
-            <artifactId>nova</artifactId>
-        </dependency>
-        <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty</artifactId>
         </dependency>
@@ -110,10 +106,6 @@
             <groupId>com.typesafe.akka</groupId>
             <artifactId>akka-typed-actor</artifactId>
         </dependency>-->
-        <dependency>
-            <groupId>com.jcraft</groupId>
-            <artifactId>jsch</artifactId>
-        </dependency>
         <dependency>
             <groupId>com.griddynamics.genesis</groupId>
             <artifactId>api</artifactId>

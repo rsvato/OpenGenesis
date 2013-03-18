@@ -31,9 +31,8 @@ import com.griddynamics.genesis.plugin.{PartialStepCoordinatorFactory, Composite
 import com.griddynamics.genesis.workflow.TrivialStepExecutor
 import com.griddynamics.genesis.core.TrivialStepCoordinatorFactory
 import com.griddynamics.genesis.workflow.{StepResult, Step}
-import com.griddynamics.genesis.service.RemoteAgentsService
-import com.typesafe.config.{ConfigSyntax, ConfigParseOptions, Config, ConfigFactory}
 import org.springframework.core.io.Resource
+import com.griddynamics.genesis.service.RemoteAgentsService
 
 trait WorkflowContext {
     def requestBroker: RequestBroker
@@ -52,11 +51,7 @@ class DefaultWorkflowContext extends WorkflowContext {
     @Autowired var storeServiceContext: StoreServiceContext = _
     @Autowired var templateServiceContext: TemplateServiceContext = _
     @Autowired var remoteAgentService: RemoteAgentsService = _
-
-    private val defaultConfigs: Config = ConfigFactory.load()
-    private def overrides: Config = ConfigFactory.parseFile(backendProperties.getFile, ConfigParseOptions.defaults().setSyntax(ConfigSyntax.PROPERTIES))
-
-    @Bean def actorSystem: ActorSystem = ActorSystem("genesis-actor-system", overrides.withFallback(defaultConfigs))
+    @Autowired var actorSystem: ActorSystem = _
 
     @Bean def requestDispatcher: RequestDispatcher = {
       val props: TypedProps[RequestDispatcher] = TypedProps(classOf[RequestDispatcher], requestDispatcherBean)

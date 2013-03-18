@@ -35,7 +35,7 @@ class CommonCheckPublicIpExecutor(val action: CheckPublicIpAction,
   def getResult() : Option[ActionResult] = {
     val vm = action.vm
     log.debug("Checking public ip of vm: '%s'", action.vm)
-    val pubIp = computeService.getIpAddresses(action.vm).flatMap(_.publicIp)
+    val pubIp = computeService.getIpAddresses(action.vm).flatMap(ips => ips.publicIp orElse ips.privateIp)
     pubIp.foreach { ip =>
       vm.setIp(ip)
       storeService.updateServer(vm)

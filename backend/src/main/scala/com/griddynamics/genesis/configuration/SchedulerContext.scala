@@ -21,23 +21,28 @@
  *   Description: Continuous Delivery Platform
  */ package com.griddynamics.genesis.configuration
 
-import org.springframework.context.annotation.{Bean, Configuration}
-import com.griddynamics.genesis.scheduler.{SchedulingServiceImpl, EnvDestructionService, NotificationService, SchedulingService, DestructionService}
+import org.springframework.context.annotation.{Profile, Bean, Configuration}
+import com.griddynamics.genesis.scheduler.{ExecutedJobsServiceImpl, FailedJobsListener, SchedulingServiceImpl, EnvironmentJobServiceImpl, NotificationService, SchedulingService, EnvironmentJobService}
 import org.springframework.scheduling.quartz.SchedulerFactoryBean
 import org.springframework.beans.factory.annotation.{Value, Autowired}
 import javax.sql.DataSource
 import org.quartz.spi.JobFactory
 import com.griddynamics.genesis.scheduler.jobs.WorkflowJobFactory
 import com.griddynamics.genesis.bean.RequestBroker
-import com.griddynamics.genesis.service.impl.ProjectService
+import com.griddynamics.genesis.service.{ExecutedJobsService, EnvironmentConfigurationService, ProjectService}
 import com.griddynamics.genesis.users.UserService
 import com.griddynamics.genesis.util.Logging
 import org.springframework.jdbc.datasource.DataSourceTransactionManager
-import java.util.Properties
+import java.util.{Date, Properties}
 import javax.annotation.PostConstruct
+import com.griddynamics.genesis.model.Environment
+import com.griddynamics.genesis.api.Success
+import com.griddynamics.genesis.core.events.{EnvDestroyed, WorkflowEventsBus}
+import com.griddynamics.genesis.repository.impl.{FailedJobRepositoryImpl, FailedJobRepository}
 
 
 @Configuration
+@Profile(Array("server"))
 class SchedulerContext extends Logging {
 
   @Autowired var dataSource: DataSource = _
@@ -48,6 +53,7 @@ class SchedulerContext extends Logging {
   @Autowired var templateService: TemplateServiceContext = _
   @Autowired var projectService: ProjectService = _
   @Autowired var userService: UserService = _
+  @Autowired var envConfigService: EnvironmentConfigurationService = _
 
   @Value("${genesis.web.admin.username:NOT-SET}") var adminUserName: String = _
   @Value("${genesis.web.admin.email:NOT-SET}") var adminEmail: String = _
@@ -57,11 +63,22 @@ class SchedulerContext extends Logging {
     if (adminUserName != "NOT-SET" && adminEmail == "NOT-SET") {
       log.warn(s"Property 'genesis.web.admin.email' is not set. This means that admin '$adminUserName' won't be able to receive email notifications")
     }
+
+    WorkflowEventsBus.subscribe {
+      case EnvDestroyed(projectId, envId) => envJobService.removeAllScheduledJobs(projectId, envId)
+    }
   }
+
+  @Bean def failedJobRepository: FailedJobRepository = new FailedJobRepositoryImpl
 
   @Bean def jobFactory: JobFactory = new WorkflowJobFactory(requestBroker, storeService.storeService, notificationService)
 
-  @Bean def destructionService: DestructionService = new EnvDestructionService(schedulingService, storeService.storeService, templateService.templateService)
+  @Bean def envJobService: EnvironmentJobService = new EnvironmentJobServiceImpl (
+    schedulingService,
+    storeService.storeService,
+    templateService.templateService,
+    envConfigService
+  )
 
   @Bean def schedulingService: SchedulingService = new SchedulingServiceImpl(scheduler.getObject)
 
@@ -71,6 +88,9 @@ class SchedulerContext extends Logging {
     userService = userService,
     projectService = projectService )
 
+  @Bean def jobListener = new FailedJobsListener(failedJobRepository)
+
+  @Bean def executedJobsService: ExecutedJobsService = new ExecutedJobsServiceImpl(failedJobRepository)
 
   @Bean def scheduler: SchedulerFactoryBean = {
     val factory = new SchedulerFactoryBean()
@@ -93,6 +113,7 @@ class SchedulerContext extends Logging {
     factory.setOverwriteExistingJobs(true)
     factory.setStartupDelay(50)
     factory.setApplicationContextSchedulerContextKey("applicationContext")
+    factory.setGlobalJobListeners(Array(jobListener))
     factory
   }
 
@@ -101,5 +122,29 @@ class SchedulerContext extends Logging {
     map.foreach { case (key, value) => props.setProperty(key, value) }
     props
   }
+}
 
+
+
+@Configuration
+@Profile(Array("genesis-cli"))
+class SchedulerStubContext {
+  @Bean def envJobService: EnvironmentJobService = new EnvironmentJobService {
+
+    def removeScheduledDestruction(projectId: Int, envId: Int) {}
+
+    def executionDate(env: Environment, destroyWorfklow: String) = None
+
+    def destructionDate(env: Environment) = None
+
+    def scheduleDestruction(projectId: Int, envId: Int, date: Date, requestedBy: String) = Success(date)
+
+    def removeAllScheduledJobs(projectId: Int, envId: Int) {}
+
+    def listScheduledJobs(projectId: Int, envId: Int) = Seq()
+
+    def removeJob(projectId: Int, envId: Int, jobId: String) {}
+
+    def scheduleExecution(projectId: Int, envId: Int, workflow: String, parameters: Map[String, String], date: Date, requestedBy: String) = Success(date)
+  }
 }

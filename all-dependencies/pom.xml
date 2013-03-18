@@ -57,10 +57,6 @@
         </dependency>
         <dependency>
             <groupId>com.griddynamics.genesis</groupId>
-            <artifactId>gdnova</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.griddynamics.genesis</groupId>
             <artifactId>nexus</artifactId>
         </dependency>
         <dependency>
@@ -77,6 +73,10 @@
         </dependency>
         <dependency>
             <artifactId>notification</artifactId>
+            <groupId>com.griddynamics.genesis</groupId>
+        </dependency>
+        <dependency>
+            <artifactId>genesis-shell</artifactId>
             <groupId>com.griddynamics.genesis</groupId>
         </dependency>
     </dependencies>

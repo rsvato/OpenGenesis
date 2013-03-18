@@ -63,6 +63,8 @@ trait GenesisSchema extends Schema {
     val configAttrs = table[SquerylEntityAttr]("env_config_attr")
     val remoteAgents = table[RemoteAgent]("remote_agent")
 
+    val failedJobDetails = table[FailedJobDetails]("failed_job_details")
+
     val genesisVersion = table[GenesisVersion]("genesis_version")
 }
 
@@ -214,6 +216,11 @@ trait GenesisSchemaPrimitive extends GenesisSchema {
         agent.port is (dbType("int")),
         agent.tags is (dbType("varchar(512)"))
     ))
+  on(failedJobDetails)(jd => declare(
+    jd.id is (primaryKey, autoIncremented),
+    jd.failureDescription is (dbType("text"))
+  ))
+
 }
 
 trait GenesisSchemaCustom extends GenesisSchema {
@@ -221,5 +228,9 @@ trait GenesisSchemaCustom extends GenesisSchema {
     on(workflows)(workflow => declare(
         workflow.variables is (dbType("varchar(4096)")),
         workflow.displayVariables is (dbType("text"))
+    ))
+
+    on(failedJobDetails)(jd => declare(
+        jd.variables is (dbType("varchar(4096)"))
     ))
 }
