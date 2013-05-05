@@ -23,7 +23,7 @@
 package com.griddynamics.genesis.workflow
 
 import java.util
-import com.griddynamics.genesis.model.ActionTrackingStatus
+import com.griddynamics.genesis.model.{Attachment, ActionTrackingStatus}
 
 /* Marker trait for any particular action */
 trait Action {
@@ -52,6 +52,10 @@ trait ActionFailed extends ActionResult {
 
 trait ActionInterrupted extends ActionResult {
     override def outcome = ActionTrackingStatus.Interrupted
+}
+
+trait ResultWithAttachment {
+  def attachments: Seq[Attachment]
 }
 
 
