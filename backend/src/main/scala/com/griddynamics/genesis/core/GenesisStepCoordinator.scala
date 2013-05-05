@@ -30,6 +30,7 @@ import com.griddynamics.genesis.model.WorkflowStepStatus._
 import scala.Some
 import com.griddynamics.genesis.plugin.GenesisStepResult
 import com.griddynamics.genesis.plugin.GenesisStep
+import PartialFunction._
 
 
 class GenesisStepCoordinator(val step: GenesisStep,
@@ -42,8 +43,11 @@ class GenesisStepCoordinator(val step: GenesisStep,
     }
 
     def onActionFinish(result: ActionResult) = {
-        storeService.endAction(result.action.uuid, Some(result.desc), result.outcome)
-        trackStart(stepCoordinator.onActionFinish(result))
+       storeService.endAction(result.action.uuid, Some(result.desc), result.outcome)
+       cond(result) { case attachment: ResultWithAttachment => {
+         true
+       }}
+       trackStart(stepCoordinator.onActionFinish(result))
     }
 
     def getStepResult() = {
