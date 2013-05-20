@@ -26,8 +26,7 @@ define [
     linkType: backend.LinkTypes.WorkflowDetails
     model: Workflow
     initialize: (options) ->
-      @link = options.urlLink
-    url: -> @link
+      @url = options.urlLink
 
 
   class EnvsCollection extends Env.Collection
@@ -49,10 +48,15 @@ define [
 
     template: "app/templates/dashboard/project_running_jobs.html"
     initialize: (options) ->
-      workflows = options.workflows
+      @workflows = options.workflows
       @envs = options.envs
       @projectId = options.projectId
-      @running = _.chain(workflows).sortBy('executionStartedTimestamp').groupBy("envId").value()
+      @running = _.chain(@workflows.toJSON()).sortBy('executionStartedTimestamp').groupBy("envId").value()
+      @poll = @workflows.clone()
+      @poll.url = @workflows.url
+      poller.PollingManager.start @poll, {delay: 1000}
+      @poll.bind "reset", @checkForUpdates, @
+
 
     toggleDetails: (e) ->
       id = $(e.currentTarget).attr("rel");
@@ -101,7 +105,7 @@ define [
       envs = new EnvsCollection([], project: @projectsCollection.get(projectId))
       $.when(workflows.fetch(), envs.fetch()).done =>
         view = new WorkflowView(
-          workflows: workflows.toJSON(),
+          workflows: workflows,
           envs: envs,
           el: $projDetailsEl,
           projectId: projectId
